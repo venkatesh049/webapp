@@ -1,0 +1,96 @@
+pipeline {
+    agent any 
+        stages {
+        stage('checkout') { 
+            steps { 
+               echo 'Taking code fron Git hub'
+               git "https://github.com/venkatesh049/webapp.git"
+	        echo 'code taken'
+
+            }
+        }
+        stage ('convert code into tar file'){
+            steps {
+                sh label: '', script: '''cd /var/lib/jenkins/workspace/pull_code
+                tar -zcvf pull_code_`date +"%Y%m%d"`.tar.gz *'''
+				}
+			}		
+    }
+}
+
+//testing environment
+---------------------
+//if first stage is success, then only all phases will success otherwise remaining will fail.
+//if it fails in first stage, then goto jenkins workspace, go into the firsta stage directory and delete files
+
+s3bucket = "testing-environement"
+qaEmailId ="kvenkatesh114@gmail.com"
+waitingTime = 24
+repositoryName = "demo"
+
+              if (s3bucket == "testing-environement") {
+              promoteStage()
+              }
+
+         def promoteStage(){
+              // Stage: promote
+                   stage ('Appprove to proceed'){	
+                       notifyQA()
+	               proceedConfirmation("proceed1","promote to testing-environement ?")
+                  }
+                  	node{
+	           stage ('Promote artifacts to testing-environement'){
+	               			sh label: '', script: '''aws s3 cp /var/lib/jenkins/workspace/pull_code/pull_code_`date +"%Y%m%d"`.tar.gz s3://testing-environement/'''
+	           }
+		    }
+		}
+
+		def notifyQA(String buildStatus = 'STARTED') {
+	        // build status of null means successful
+	        buildStatus =  buildStatus ?: 'SUCCESSFUL'
+	        def toList = qaEmailId
+	        def subject = "testing-environement: '${repositoryName}' artifact ready for promotion to testing-environement"
+	        def summary = "${subject} (${env.BUILD_URL})"
+	        def details = """
+	        <p>Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' is ready to be promoted from DEV to testing-environement.</p>
+	        <p>Click here to move the library into the testing-environement artifactory for testing. "<a href="${env.BUILD_URL}/input">${env.JOB_NAME}[${env.BUILD_NUMBER}]/</a>"</p>
+	   """
+	        emailext body: details,mimeType: 'text/html', subject: subject, to: toList
+                }
+		def proceedConfirmation(String id, String message) {	
+                def userInput = true
+                def didTimeout = false
+                try {
+                timeout(time: waitingTime, unit: 'HOURS') { //
+                userInput = input(
+                id: "${id}", message: "${message}", parameters: [
+                [$class: 'BooleanParameterDefinition', defaultValue: true, description: '', name: 'Confirm to proceed !']
+             ])
+          }
+      } 
+     	catch(e) { // timeout reached or input false
+                def user = e.getCauses()[0].getUser()
+                if('SYSTEM' == user.toString()) { // SYSTEM means timeout.
+                didTimeout = true
+                if (didTimeout) {
+                echo "no input was received abefore timeout"
+                currentBuild.result = "FAILURE"
+                throw e
+            } 
+		else if (userInput == true) {
+                echo "this was successful"
+            } 
+		else {
+                userInput = false
+                echo "this was not successful"
+                currentBuild.result = "FAILURE"
+                println("catch exeption. currentBuild.result: ${currentBuild.result}")
+                throw e
+            }
+       } 
+		else {
+                userInput = false
+                echo "Aborted by: [${user}]"
+     }
+   }
+ }
